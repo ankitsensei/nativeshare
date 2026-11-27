@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
@@ -16,6 +16,8 @@ import {
   Upload,
   Wifi,
   X,
+  Download,
+  RefreshCw,
 } from "lucide-react";
 
 function formatBytes(bytes: number) {
@@ -33,13 +35,114 @@ function getFileIcon(type: string) {
   return File;
 }
 
+interface SharedFile {
+  id: string;
+  originalName: string;
+  size: number;
+  mimetype: string;
+  uploadedAt: string;
+}
+
 export default function App() {
+  const API_BASE = `${window.location.protocol}//${window.location.hostname}:3000/api`;
+
+  const [sharedFiles, setSharedFiles] = useState<SharedFile[]>([]);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
+  const [uploadMessage, setUploadMessage] = useState("");
+
   const [files, setFiles] = useState<File[]>([]);
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const hostname = window.location.hostname;
   const networkAddress = `http://${hostname}:3000`;
+
+  async function fetchSharedFiles() {
+    try {
+      const response = await fetch(`${API_BASE}/files`);
+
+      if (!response.ok) {
+        throw new Error("Failed to fetch shared files");
+      }
+
+      const data = await response.json();
+      setSharedFiles(data.files);
+    } catch (error) {
+      console.error("File listing error:", error);
+    }
+  }
+
+  useEffect(() => {
+    fetchSharedFiles();
+  }, []);
+
+  function uploadFiles() {
+    if (!files.length || uploading) return;
+
+    setUploading(true);
+    setUploadProgress(0);
+    setUploadError("");
+    setUploadMessage("");
+
+    const formData = new FormData();
+
+    files.forEach((file) => {
+      formData.append("files", file);
+    });
+
+    const xhr = new XMLHttpRequest();
+
+    xhr.open("POST", `${API_BASE}/files/upload`);
+
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) {
+        setUploadProgress(Math.round((event.loaded / event.total) * 100));
+      }
+    };
+
+    xhr.onload = () => {
+      setUploading(false);
+
+      if (xhr.status >= 200 && xhr.status < 300) {
+        setUploadMessage("Files uploaded successfully!");
+        setFiles([]);
+        fetchSharedFiles();
+      } else {
+        try {
+          const result = JSON.parse(xhr.responseText);
+          setUploadError(result.message || "Upload failed");
+        } catch {
+          setUploadError("Upload failed. Please try again.");
+        }
+      }
+    };
+
+    xhr.onerror = () => {
+      setUploading(false);
+      setUploadError("Network error. Check your connection.");
+    };
+
+    xhr.onabort = () => {
+      setUploading(false);
+      setUploadError("Upload cancelled.");
+    };
+
+    xhr.send(formData);
+  }
+
+  function downloadFile(file: SharedFile) {
+    const url = `${API_BASE}/files/${encodeURIComponent(file.id)}/download`;
+
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = file.originalName;
+
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  }
 
   function addFiles(selectedFiles: FileList | File[]) {
     setFiles((previous) => {
@@ -260,6 +363,53 @@ export default function App() {
           </section>
         )}
 
+        {/* Upload action */}
+        {files.length > 0 && (
+          <section className="mt-5 rounded-2xl border border-white/10 bg-[#121216] p-5">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="font-semibold">Ready to transfer</h3>
+                <p className="mt-1 text-xs text-zinc-500">
+                  {files.length} files · {formatBytes(totalSize)}
+                </p>
+              </div>
+
+              <button
+                onClick={uploadFiles}
+                disabled={uploading}
+                className="flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Upload size={17} />
+                {uploading ? "Uploading..." : "Upload files"}
+              </button>
+            </div>
+
+            {uploading && (
+              <div className="mt-5">
+                <div className="mb-2 flex justify-between text-xs">
+                  <span className="text-zinc-400">Uploading files...</span>
+                  <span className="text-blue-400">{uploadProgress}%</span>
+                </div>
+
+                <div className="h-2 overflow-hidden rounded-full bg-zinc-800">
+                  <div
+                    className="h-full rounded-full bg-blue-500 transition-all"
+                    style={{ width: `${uploadProgress}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {uploadError && (
+              <p className="mt-4 text-sm text-red-400">{uploadError}</p>
+            )}
+
+            {uploadMessage && (
+              <p className="mt-4 text-sm text-emerald-400">{uploadMessage}</p>
+            )}
+          </section>
+        )}
+
         {/* Future transfer section */}
         <section className="mt-8 rounded-2xl border border-white/10 bg-[#121216] p-5">
           <div className="flex items-center gap-3">
@@ -292,6 +442,70 @@ export default function App() {
             <span>Designed for local file sharing</span>
           </div>
         </footer>
+
+        {/* Shared files */}
+        <section className="mt-10">
+          <div className="mb-5 flex items-center justify-between">
+            <div>
+              <h3 className="text-lg font-semibold">Shared files</h3>
+              <p className="mt-1 text-xs text-zinc-500">
+                Files available on this network
+              </p>
+            </div>
+
+            <button
+              onClick={fetchSharedFiles}
+              className="rounded-lg border border-white/10 p-2 text-zinc-400 hover:bg-white/5"
+              aria-label="Refresh shared files"
+            >
+              <RefreshCw size={17} />
+            </button>
+          </div>
+
+          {sharedFiles.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-white/10 py-10 text-center">
+              <HardDrive className="mx-auto text-zinc-600" size={28} />
+              <p className="mt-3 text-sm text-zinc-500">
+                No shared files available
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {sharedFiles.map((file) => {
+                const Icon = getFileIcon(file.mimetype);
+
+                return (
+                  <div
+                    key={file.id}
+                    className="flex items-center gap-4 rounded-xl border border-white/10 bg-[#121216] p-4"
+                  >
+                    <div className="rounded-xl bg-blue-500/10 p-3 text-blue-400">
+                      <Icon size={21} />
+                    </div>
+
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium">
+                        {file.originalName}
+                      </p>
+                      <p className="mt-1 text-xs text-zinc-500">
+                        {formatBytes(file.size)} ·{" "}
+                        {new Date(file.uploadedAt).toLocaleString()}
+                      </p>
+                    </div>
+
+                    <button
+                      onClick={() => downloadFile(file)}
+                      aria-label={`Download ${file.originalName}`}
+                      className="rounded-lg bg-blue-600/10 p-3 text-blue-400 hover:bg-blue-600/20"
+                    >
+                      <Download size={19} />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
       </div>
     </main>
   );
